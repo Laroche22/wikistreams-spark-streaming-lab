@@ -1,0 +1,2 @@
+confluent-kafka==2.16.0
+pywikibot[eventstreams]==11.8.0
