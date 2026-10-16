@@ -1,61 +1,34 @@
-# %% Dependencies
-import socket
 import json
-import time
-from confluent_kafka import Producer
-from pywikibot.comms.eventstreams import EventStreams
-from datetime import datetime, timedelta
+import requests
+from kafka import KafkaProducer
 
-# %% Helper Functions
-# Serializer function to change message from python dict to json
-value_serializer = lambda val: json.dumps(val).encode('utf-8')
-
-# %% Producder Instantiation
-# Set the producer configuration
-conf = {'bootstrap.servers': 'kafka:19092',
-        'client.id': socket.gethostname(),
-        'compression.type': 'lz4'
-}
-
-# Instantiate the producer
-producer = Producer(conf)
-
-# %% Create wikistreams query
-stream = EventStreams(
-  streams=["recentchange"]
-)
-stream.register_filter(server_name='fr.wikipedia.org', type='edit')
-
-# %% Query EventStream
-# Run a single query and inspect raw and example formatted output
-change = next(stream)
-print('Raw Message: ' + str(change))
-print(
-  '\n' # Add line breakd between outputs
-  'Formatted Message: {type} on page "{title}" by "{user}" at {meta[dt]}.'
-  .format(**change)
+# Configuration du Producer Kafka
+producer = KafkaProducer(
+    bootstrap_servers=['localhost:9002'],
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
 )
 
-# %% Streaming Query
-duration = 10 # Streaming window in minutes
-start_time = datetime.now() # Current clock time
-stop_time = start_time + timedelta(minutes=duration) #start+duration=stop
+# Endpoint Wikimedia EventStreams
+url = 'https://stream.wikimedia.org/v2/stream/recentchange'
 
-# Query stream for <duration> minutes
-# Uncomment print change to examine output in interactive env
-topic='wikistreams'
-while datetime.now() < stop_time:
-  change = next(stream)
-  producer.produce(
-    topic=topic,
-    value=value_serializer(change)
-  )
-  print(' ')
-  print(change)
+# Choix de la langue à filtrer (ex: 'en.wikipedia.org' ou 'fr.wikipedia.org')
+TARGET_SERVER = 'en.wikipedia.org' 
 
-# Close producer after run duration
-print('\n wait 1 minute for last messages and then close producer')
-time.sleep(60)
-print('\n closing producer')
-producer.close()
-print('')
+print(f"Connexion au flux Wikimedia, filtrage pour : {TARGET_SERVER}...")
+
+response = requests.get(url, stream=True)
+for line in response.iter_lines():
+    if line:
+        decoded_line = line.decode('utf-8')
+        if decoded_line.startswith('data:'):
+            json_data = json.loads(decoded_line[5:])
+            
+            # Filtre par niveau de langue / serveur
+            if json_data.get('server_name') == TARGET_SERVER:
+                producer.send('wikistreams', value=json_data)
+                title = json_data.get('title')
+                # Récupération de la taille de l'édition (métrique métier)
+                length = json_data.get('length', {})
+                new_len = length.get('new', 0)
+                old_len = length.get('old', 0)
+                print(f"Événement envoyé | Page: {title} | Taille nouvelle: {new_len}, ancienne: {old_len}")
